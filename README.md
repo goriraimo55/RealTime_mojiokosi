@@ -16,7 +16,7 @@
   - **LM Studio**(ローカル) / **Ollama**(ローカル)
   - **OpenAI** / **Groq** / **Anthropic (Claude)** / 任意のOpenAI互換API
 - 📱 **タブレット対応** — レスポンシブUI・44px以上のタッチターゲット・録音中の画面スリープ防止(Wake Lock)
-- 💾 録音音声(webm/m4a)・文字起こし(.md)・議事録(.md)のダウンロード、タイムスタンプ付き表示、入力レベルメーター
+- 💾 録音音声(**MP3**・どこでも再生可/webm切替可)・文字起こし(.md)・議事録(.md)のダウンロード、タイムスタンプ付き表示、入力レベルメーター
 - 🔒 データはすべてブラウザ内で処理。外部送信されるのは自分で設定したAPIへの音声チャンク/テキストのみ。設定は localStorage に保存
 
 ## 🚀 使い方
@@ -37,6 +37,8 @@
    - Chrome (Windows): 「画面全体」でシステム音声を共有可能
    - Chrome (macOS): 「タブ」の音声のみ共有可能(Meet/Zoomのタブなどを選択)
 4. 文字起こしがリアルタイムで流れます。**■ 停止** で終了(録音音声のダウンロードボタンが出ます)
+
+> 録音は既定で **MP3**(モノラル128kbps・リアルタイムエンコード)で保存されます。⚙️設定の「録音の保存形式」で WebM/M4A に切り替え可能です。
 
 ### 3. 議事録を作る
 
@@ -92,8 +94,8 @@
 
 ## 🛠️ 技術構成
 
-- 依存ライブラリなし(Vanilla JS / 単一HTML)
+- Vanilla JS / 単一HTML(外部リクエストなし。MP3エンコーダ [lamejs](https://github.com/zhuker/lamejs)(LGPL-3.0)をインライン同梱)
 - `getUserMedia` + `getDisplayMedia` + Web Audio API(ミックス・レベル計測・無音検出)
-- `MediaRecorder`(全体録音 + Whisper用チャンク録音)
+- `MediaRecorder`(webm録音 + Whisper用チャンク録音)/ ScriptProcessor + lamejs(MP3リアルタイムエンコード)
 - Web Speech API(リアルタイム認識・自動再接続)
 - Fetch + SSE ストリーミング(OpenAI互換 / Anthropic Messages API)
