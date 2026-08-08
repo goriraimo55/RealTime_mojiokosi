@@ -351,7 +351,12 @@
         <label class="field">Whisper送信間隔(秒)
           <input type="number" id="chunkSec" min="5" max="60" step="1" value="15">
         </label>
-        <span class="note">録音停止後に「MP3で保存」ボタンからMP3へ変換して保存できます。元のWebM/M4A形式でも保存できます。</span>
+        <label class="field">録音の保存形式
+          <select id="audioFormat">
+            <option value="mp3">MP3 (どこでも再生可・推奨)</option>
+            <option value="webm">WebM / M4A (ブラウザ標準・軽量)</option>
+          </select>
+        </label>
         <span class="note">ブラウザ内蔵エンジンは Chrome / Edge / Android Chrome で動作します。デスクトップ音声も文字起こししたい場合は Whisper互換API か ハイブリッド を選んでください。</span>
       </fieldset>
 
@@ -855,6 +860,7 @@ const defaultSettings = () => ({
   sttEngine: "webspeech",
   lang: "ja-JP",
   chunkSec: 15,
+  audioFormat: "mp3",
   whisper: { baseUrl: "", apiKey: "", model: "whisper-1" },
   llm: { provider: "lmstudio", baseUrl: PROVIDER_PRESETS.lmstudio.baseUrl, apiKey: "", model: "" },
   prompt: DEFAULT_PROMPT,
@@ -874,6 +880,7 @@ function bindSettingsUI() {
   $("sttEngine").value = settings.sttEngine;
   $("sttLang").value = settings.lang;
   $("chunkSec").value = settings.chunkSec;
+  $("audioFormat").value = settings.audioFormat;
   $("whisperBaseUrl").value = settings.whisper.baseUrl;
   $("whisperApiKey").value = settings.whisper.apiKey;
   $("whisperModel").value = settings.whisper.model;
@@ -889,6 +896,7 @@ function bindSettingsUI() {
 $("sttEngine").addEventListener("change", e => { settings.sttEngine = e.target.value; saveSettings(); updateEngineHint(); });
 $("sttLang").addEventListener("change", e => { settings.lang = e.target.value; saveSettings(); });
 $("chunkSec").addEventListener("change", e => { settings.chunkSec = Math.min(60, Math.max(5, +e.target.value || 15)); e.target.value = settings.chunkSec; saveSettings(); });
+$("audioFormat").addEventListener("change", e => { settings.audioFormat = e.target.value; saveSettings(); });
 $("whisperBaseUrl").addEventListener("change", e => { settings.whisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.whisper.baseUrl; saveSettings(); });
 $("whisperApiKey").addEventListener("change", e => { settings.whisper.apiKey = e.target.value.trim(); saveSettings(); });
 $("whisperModel").addEventListener("change", e => { settings.whisper.model = e.target.value.trim(); saveSettings(); });
@@ -1013,6 +1021,7 @@ $("clearTranscriptBtn").addEventListener("click", () => {
 let audioCtx = null;
 let micStream = null, deskStream = null, displayStream = null;
 let mixedRecorder = null, mixedChunks = [], mixedMime = "";
+let mp3Encoder = null, mp3Parts = [], pcmNode = null;
 let running = false;
 let timerInt = null, meterInt = null;
 let analysers = {}; // { mic, desk }
@@ -1246,16 +1255,46 @@ async function startSession() {
 
   // --- ミックスして録音保存 ---
   if ($("saveAudio").checked) {
-    const dest = audioCtx.createMediaStreamDestination();
-    if (micStream) audioCtx.createMediaStreamSource(micStream).connect(dest);
-    if (deskStream) audioCtx.createMediaStreamSource(deskStream).connect(dest);
-    mixedMime = pickMime();
-    mixedChunks = [];
-    try {
-      mixedRecorder = new MediaRecorder(dest.stream, mixedMime ? { mimeType: mixedMime } : undefined);
-      mixedRecorder.ondataavailable = (e) => { if (e.data.size) mixedChunks.push(e.data); };
-      mixedRecorder.start(1000);
-    } catch (e) { toast("音声保存の開始に失敗: " + e.message, "warn"); mixedRecorder = null; }
+    let wantMp3 = settings.audioFormat !== "webm";
+    if (wantMp3 && typeof lamejs === "undefined") {
+      wantMp3 = false;
+      toast("MP3エンコーダを読み込めなかったため、webm形式で保存します", "warn");
+    }
+    if (wantMp3) {
+      // マイク+デスクトップをモノラルにミックスし、リアルタイムでMP3エンコード
+      const mixBus = audioCtx.createGain();
+      if (micStream) audioCtx.createMediaStreamSource(micStream).connect(mixBus);
+      if (deskStream) audioCtx.createMediaStreamSource(deskStream).connect(mixBus);
+      pcmNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      mixBus.connect(pcmNode);
+      const mute = audioCtx.createGain(); // 音声処理を駆動するための無音出力(エコー防止)
+      mute.gain.value = 0;
+      pcmNode.connect(mute);
+      mute.connect(audioCtx.destination);
+      mp3Encoder = new lamejs.Mp3Encoder(1, audioCtx.sampleRate, 128);
+      mp3Parts = [];
+      const int16 = new Int16Array(4096);
+      pcmNode.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        const buf = mp3Encoder.encodeBuffer(int16);
+        if (buf.length) mp3Parts.push(buf);
+      };
+    } else {
+      const dest = audioCtx.createMediaStreamDestination();
+      if (micStream) audioCtx.createMediaStreamSource(micStream).connect(dest);
+      if (deskStream) audioCtx.createMediaStreamSource(deskStream).connect(dest);
+      mixedMime = pickMime();
+      mixedChunks = [];
+      try {
+        mixedRecorder = new MediaRecorder(dest.stream, mixedMime ? { mimeType: mixedMime } : undefined);
+        mixedRecorder.ondataavailable = (e) => { if (e.data.size) mixedChunks.push(e.data); };
+        mixedRecorder.start(1000);
+      } catch (e) { toast("音声保存の開始に失敗: " + e.message, "warn"); mixedRecorder = null; }
+    }
   }
 
   // --- 文字起こしエンジン起動 ---
@@ -1291,68 +1330,12 @@ async function startSession() {
 
 function showAudioDownload(blob, name) {
   const area = $("audioDownloadArea");
+  const btn = document.createElement("button");
+  btn.className = "small";
+  btn.textContent = `⬇️ 録音音声を保存 ${name.slice(name.lastIndexOf(".")).toUpperCase()} (${(blob.size / 1048576).toFixed(1)} MB)`;
+  btn.addEventListener("click", () => downloadBlob(blob, name));
   area.innerHTML = "";
-
-  const originalBtn = document.createElement("button");
-  originalBtn.className = "small";
-  originalBtn.textContent = `⬇️ 元の形式で保存 ${name.slice(name.lastIndexOf(".")).toUpperCase()} (${(blob.size / 1048576).toFixed(1)} MB)`;
-  originalBtn.addEventListener("click", () => downloadBlob(blob, name));
-  area.appendChild(originalBtn);
-
-  if (name.toLowerCase().endsWith(".mp3")) return;
-
-  const mp3Btn = document.createElement("button");
-  mp3Btn.className = "small";
-  mp3Btn.textContent = "⬇️ MP3で保存";
-  mp3Btn.addEventListener("click", () => convertAndDownloadMp3(blob, `recording_${stamp()}.mp3`, mp3Btn));
-  area.appendChild(mp3Btn);
-}
-
-async function convertAndDownloadMp3(blob, name, btn) {
-  if (typeof lamejs === "undefined") return toast("MP3エンコーダを読み込めませんでした", "error");
-  if (!window.AudioContext && !window.webkitAudioContext) return toast("このブラウザではMP3変換に必要なAudioContextが使えません", "error");
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "MP3に変換中...";
-  let ctx;
-  try {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
-    const samples = mixAudioBufferToMono(decoded);
-    const encoder = new lamejs.Mp3Encoder(1, decoded.sampleRate, 128);
-    const parts = [];
-    const blockSize = 1152;
-    for (let offset = 0; offset < samples.length; offset += blockSize) {
-      const slice = samples.subarray(offset, offset + blockSize);
-      const int16 = new Int16Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        const sample = Math.max(-1, Math.min(1, slice[i]));
-        int16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-      }
-      const mp3buf = encoder.encodeBuffer(int16);
-      if (mp3buf.length) parts.push(mp3buf);
-    }
-    const tail = encoder.flush();
-    if (tail.length) parts.push(tail);
-    downloadBlob(new Blob(parts, { type: "audio/mpeg" }), name);
-    toast("MP3に変換して保存しました", "ok");
-  } catch (e) {
-    console.error("mp3 conversion error", e);
-    toast("MP3変換に失敗しました: " + (e.message || e.name), "error", 7000);
-  } finally {
-    if (ctx) ctx.close().catch(() => {});
-    btn.disabled = false;
-    btn.textContent = originalText;
-  }
-}
-
-function mixAudioBufferToMono(buffer) {
-  const out = new Float32Array(buffer.length);
-  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-    const data = buffer.getChannelData(ch);
-    for (let i = 0; i < data.length; i++) out[i] += data[i] / buffer.numberOfChannels;
-  }
-  return out;
+  area.appendChild(btn);
 }
 
 function cleanupStreams() {
@@ -1368,7 +1351,16 @@ function stopSession() {
   chunkers.forEach(c => c.stop());
   chunkers = [];
 
-
+  // --- MP3リアルタイムエンコードの終了処理 ---
+  if (mp3Encoder) {
+    if (pcmNode) { pcmNode.onaudioprocess = null; try { pcmNode.disconnect(); } catch {} pcmNode = null; }
+    const tail = mp3Encoder.flush();
+    if (tail.length) mp3Parts.push(tail);
+    mp3Encoder = null;
+    const blob = new Blob(mp3Parts, { type: "audio/mpeg" });
+    mp3Parts = [];
+    if (blob.size > 0) showAudioDownload(blob, `recording_${stamp()}.mp3`);
+  }
 
   if (mixedRecorder && mixedRecorder.state !== "inactive") {
     mixedRecorder.onstop = () => {
