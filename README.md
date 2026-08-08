@@ -7,6 +7,7 @@
 ## ✨ 機能
 
 - 🎤 **マイク + 🖥️ デスクトップ音声の同時キャプチャ**(Web Audio APIでミックスして録音・保存)
+- 🔇 **3段階のマイクノイズ除去** — 「強」ではブラウザ内蔵処理に声帯域フィルターと適応型ノイズゲートを重ね、サーキュレーターなどの定常音を低減
 - 📝 **リアルタイム文字起こし**(3エンジン切り替え)
   - **ブラウザ内蔵 (Web Speech API)** — 無料・設定不要。マイク音声のみ(Chrome / Edge / Android Chrome)
   - **Whisper互換API** — マイクとデスクトップ音声を*別々に*文字起こしし、`[マイク]` / `[デスクトップ]` の話者ラベル付きで表示(OpenAI / Groq / ローカルWhisperサーバー対応)
@@ -31,7 +32,7 @@
 
 ### 2. 録音する
 
-1. 「🎤 マイク」「🖥️ デスクトップ音声」の使う方にチェック
+1. 「🎤 マイク」「🖥️ デスクトップ音声」の使う方にチェック（サーキュレーターなどの定常音がある場合は、⚙️設定 →「マイクのノイズ除去」を「強」に設定）
 2. **● 録音開始** を押す
 3. デスクトップ音声を使う場合、画面共有ダイアログで **「タブ」または「画面全体」を選び、「音声も共有」に必ずチェック**
    - Chrome (Windows): 「画面全体」でシステム音声を共有可能
@@ -95,7 +96,7 @@
 ## 🛠️ 技術構成
 
 - Vanilla JS / 単一HTML(外部リクエストなし。MP3エンコーダ [lamejs](https://github.com/zhuker/lamejs)(LGPL-3.0)をインライン同梱)
-- `getUserMedia` + `getDisplayMedia` + Web Audio API(ミックス・レベル計測・無音検出)
+- `getUserMedia` + `getDisplayMedia` + Web Audio API(ミックス・レベル計測・無音検出・適応型ノイズゲート)
 - `MediaRecorder`(webm録音 + Whisper用チャンク録音)/ ScriptProcessor + lamejs(MP3リアルタイムエンコード)
 - Web Speech API(リアルタイム認識・自動再接続)
 - Fetch + SSE ストリーミング(OpenAI互換 / Anthropic Messages API)
