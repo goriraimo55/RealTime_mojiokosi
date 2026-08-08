@@ -265,7 +265,7 @@
         <span class="meter"><i id="micMeter"></i></span>
       </label>
       <label class="toggle" id="deskToggle">
-        <input type="checkbox" id="useDesk">
+        <input type="checkbox" id="useDesk" checked>
         <span>🖥️ デスクトップ音声</span>
         <span class="meter"><i id="deskMeter"></i></span>
       </label>
@@ -298,7 +298,7 @@
       <div class="empty-note" id="emptyNote">
         「● 録音開始」を押すと、ここに文字起こしがリアルタイムで表示されます。<br><br>
         🖥️ デスクトップ音声を使う場合は、開始時の画面共有ダイアログで<br>
-        <b>「タブ」または「画面全体」を選び、「音声を共有」に必ずチェック</b>を入れてください。
+        <b>「タブ」または「画面全体」を選び、「システム音声も共有する / 音声を共有」をON</b>にしてください。
       </div>
     </div>
     <div id="audioDownloadArea"></div>
@@ -1206,17 +1206,23 @@ async function startSession() {
       });
     }
 
-    // --- デスクトップ音声(画面共有ダイアログで「音声を共有」が必要) ---
+    // --- デスクトップ音声(画面共有ダイアログで「システム音声も共有する / 音声を共有」が必要) ---
     if (useDesk) {
       displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: true, // audio単独指定は不可のためvideoも要求(トラックは即停止する)
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          systemAudio: "include",
+        },
+        systemAudio: "include",
       });
       const audioTracks = displayStream.getAudioTracks();
       if (!audioTracks.length) {
         displayStream.getTracks().forEach(t => t.stop());
         displayStream = null;
-        throw new Error("共有ダイアログで「音声を共有」にチェックが入っていませんでした。もう一度、タブまたは画面全体を選んで音声共有を有効にしてください。");
+        throw new Error("共有ダイアログで「システム音声も共有する / 音声を共有」がONになっていませんでした。もう一度、タブまたは画面全体を選んで音声共有を有効にしてください。");
       }
       deskStream = new MediaStream(audioTracks);
       // 映像トラックは不要なので停止(音声トラックは維持される)
