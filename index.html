@@ -351,6 +351,14 @@
         <label class="field">Whisper送信間隔(秒)
           <input type="number" id="chunkSec" min="5" max="60" step="1" value="15">
         </label>
+        <label class="field">マイクのノイズ除去
+          <select id="noiseSuppressionMode">
+            <option value="strong">強 (サーキュレーターなどの定常音向け・推奨)</option>
+            <option value="standard">標準 (ブラウザ内蔵)</option>
+            <option value="off">オフ (音楽・原音重視)</option>
+          </select>
+        </label>
+        <span class="note">「強」はブラウザ内蔵のノイズ抑制に加え、声の帯域を通すフィルターと適応型ノイズゲートを録音・Whisper入力に適用します。内蔵文字起こしへの適用範囲はブラウザに依存します。</span>
         <label class="field">録音の保存形式
           <select id="audioFormat">
             <option value="mp3">MP3 (どこでも再生可・推奨)</option>
@@ -861,6 +869,7 @@ const defaultSettings = () => ({
   lang: "ja-JP",
   chunkSec: 15,
   audioFormat: "mp3",
+  noiseSuppressionMode: "strong",
   whisper: { baseUrl: "", apiKey: "", model: "whisper-1" },
   llm: { provider: "lmstudio", baseUrl: PROVIDER_PRESETS.lmstudio.baseUrl, apiKey: "", model: "" },
   prompt: DEFAULT_PROMPT,
@@ -881,6 +890,7 @@ function bindSettingsUI() {
   $("sttLang").value = settings.lang;
   $("chunkSec").value = settings.chunkSec;
   $("audioFormat").value = settings.audioFormat;
+  $("noiseSuppressionMode").value = settings.noiseSuppressionMode;
   $("whisperBaseUrl").value = settings.whisper.baseUrl;
   $("whisperApiKey").value = settings.whisper.apiKey;
   $("whisperModel").value = settings.whisper.model;
@@ -897,6 +907,7 @@ $("sttEngine").addEventListener("change", e => { settings.sttEngine = e.target.v
 $("sttLang").addEventListener("change", e => { settings.lang = e.target.value; saveSettings(); });
 $("chunkSec").addEventListener("change", e => { settings.chunkSec = Math.min(60, Math.max(5, +e.target.value || 15)); e.target.value = settings.chunkSec; saveSettings(); });
 $("audioFormat").addEventListener("change", e => { settings.audioFormat = e.target.value; saveSettings(); });
+$("noiseSuppressionMode").addEventListener("change", e => { settings.noiseSuppressionMode = e.target.value; saveSettings(); });
 $("whisperBaseUrl").addEventListener("change", e => { settings.whisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.whisper.baseUrl; saveSettings(); });
 $("whisperApiKey").addEventListener("change", e => { settings.whisper.apiKey = e.target.value.trim(); saveSettings(); });
 $("whisperModel").addEventListener("change", e => { settings.whisper.model = e.target.value.trim(); saveSettings(); });
@@ -1019,7 +1030,8 @@ $("clearTranscriptBtn").addEventListener("click", () => {
  *  Audio capture / mixing / metering
  * ======================================================= */
 let audioCtx = null;
-let micStream = null, deskStream = null, displayStream = null;
+let micStream = null, micRawStream = null, deskStream = null, displayStream = null;
+let noiseWorkletUrl = null;
 let mixedRecorder = null, mixedChunks = [], mixedMime = "";
 let mp3Encoder = null, mp3Parts = [], pcmNode = null;
 let running = false;
@@ -1048,6 +1060,55 @@ function makeAnalyser(stream) {
   an.fftSize = 2048; // 約43ms窓 — 短い発話も取りこぼしにくくする
   src.connect(an);
   return an;
+}
+
+// ブラウザ標準処理後の信号から定常ノイズ床を追従推定し、無発話時だけ穏やかに減衰する。
+// 完全なミュートにしないことで語頭の欠落を抑え、フィルターでファンの低域・ヒスの高域も削る。
+async function createStrongNoiseSuppressedStream(stream) {
+  if (!audioCtx.audioWorklet || typeof AudioWorkletNode === "undefined") {
+    toast("高度なノイズ除去に未対応のため、ブラウザ標準のノイズ除去を使用します", "warn", 6000);
+    return stream;
+  }
+  const processor = `
+    class AdaptiveNoiseGate extends AudioWorkletProcessor {
+      constructor() { super(); this.floor = 0.008; this.gain = 1; }
+      process(inputs, outputs) {
+        const input = inputs[0], output = outputs[0];
+        if (!input.length) return true;
+        let power = 0, count = 0;
+        for (const channel of input) for (let i = 0; i < channel.length; i++) { power += channel[i] * channel[i]; count++; }
+        const rms = Math.sqrt(power / Math.max(1, count));
+        // 小さい値だけをゆっくり学習し、発話をノイズ床として取り込まない。
+        if (rms < this.floor * 1.6) this.floor = this.floor * 0.992 + rms * 0.008;
+        else this.floor *= 1.00002;
+        this.floor = Math.min(0.06, Math.max(0.0015, this.floor));
+        const open = rms > Math.max(0.009, this.floor * 2.4);
+        const target = open ? 1 : 0.08;
+        const coeff = open ? 0.32 : 0.025;
+        this.gain += (target - this.gain) * coeff;
+        for (let c = 0; c < output.length; c++) {
+          const src = input[Math.min(c, input.length - 1)];
+          for (let i = 0; i < output[c].length; i++) output[c][i] = (src ? src[i] : 0) * this.gain;
+        }
+        return true;
+      }
+    }
+    registerProcessor("adaptive-noise-gate", AdaptiveNoiseGate);`;
+  noiseWorkletUrl = URL.createObjectURL(new Blob([processor], { type: "text/javascript" }));
+  await audioCtx.audioWorklet.addModule(noiseWorkletUrl);
+
+  const source = audioCtx.createMediaStreamSource(stream);
+  const highpass = audioCtx.createBiquadFilter();
+  highpass.type = "highpass"; highpass.frequency.value = 100; highpass.Q.value = 0.7;
+  const lowpass = audioCtx.createBiquadFilter();
+  lowpass.type = "lowpass"; lowpass.frequency.value = 10000; lowpass.Q.value = 0.7;
+  const gate = new AudioWorkletNode(audioCtx, "adaptive-noise-gate");
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -24; compressor.knee.value = 18;
+  compressor.ratio.value = 3; compressor.attack.value = 0.006; compressor.release.value = 0.18;
+  const destination = audioCtx.createMediaStreamDestination();
+  source.connect(highpass).connect(lowpass).connect(gate).connect(compressor).connect(destination);
+  return destination.stream;
 }
 
 /* =========================================================
@@ -1201,9 +1262,18 @@ async function startSession() {
 
     // --- マイク ---
     if (useMic) {
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      const suppress = settings.noiseSuppressionMode !== "off";
+      micRawStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: suppress,
+          noiseSuppression: suppress,
+          autoGainControl: suppress,
+          channelCount: 1,
+        }
       });
+      micStream = settings.noiseSuppressionMode === "strong"
+        ? await createStrongNoiseSuppressedStream(micRawStream)
+        : micRawStream;
     }
 
     // --- デスクトップ音声(画面共有ダイアログで「音声を共有」が必要) ---
@@ -1333,9 +1403,10 @@ function showAudioDownload(blob, name) {
 }
 
 function cleanupStreams() {
-  [micStream, deskStream, displayStream].forEach(s => s && s.getTracks().forEach(t => t.stop()));
-  micStream = deskStream = displayStream = null;
+  [micStream, micRawStream, deskStream, displayStream].forEach(s => s && s.getTracks().forEach(t => t.stop()));
+  micStream = micRawStream = deskStream = displayStream = null;
   analysers = {};
+  if (noiseWorkletUrl) { URL.revokeObjectURL(noiseWorkletUrl); noiseWorkletUrl = null; }
   if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
 }
 
