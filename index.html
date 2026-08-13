@@ -384,6 +384,8 @@
             <option value="large-v3-turbo">large-v3-turbo (高速・高精度)</option>
           </select>
         </label>
+        <button class="small" id="testLocalWhisperBtn">🔌 ローカルサーバーに接続テスト</button>
+        <span class="note" id="localWhisperStatus"></span>
         <span class="note">付属の <code>local_whisper_server.py</code> を起動すると、音声は端末内だけで処理されます。クラウドAPIやAPIキーは不要です。</span>
       </fieldset>
 
@@ -952,6 +954,27 @@ $("audioFormat").addEventListener("change", e => { settings.audioFormat = e.targ
 $("noiseSuppressionMode").addEventListener("change", e => { settings.noiseSuppressionMode = e.target.value; saveSettings(); });
 $("localWhisperUrl").addEventListener("change", e => { settings.localWhisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.localWhisper.baseUrl; saveSettings(); });
 $("localWhisperModel").addEventListener("change", e => { settings.localWhisper.model = e.target.value; saveSettings(); });
+$("testLocalWhisperBtn").addEventListener("click", async () => {
+  const button = $("testLocalWhisperBtn");
+  const status = $("localWhisperStatus");
+  const base = settings.localWhisper.baseUrl;
+  if (!base) return toast("ローカル faster-whisper のURLを入力してください", "warn");
+  button.disabled = true;
+  status.textContent = "接続確認中…";
+  try {
+    const res = await fetch(base + "/health");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.status !== "ok") throw new Error("応答内容が不正です");
+    status.textContent = "✅ 接続できました。このターミナルを開いたまま録音してください。";
+    toast("ローカル faster-whisper に接続できました", "ok");
+  } catch (error) {
+    status.textContent = "❌ 接続できません。Windows用起動ファイルを実行し、ターミナルを開いたままにしてください。";
+    toast(`ローカル faster-whisper に接続できません: ${error.message}`, "error", 8000);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("whisperBaseUrl").addEventListener("change", e => { settings.whisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.whisper.baseUrl; saveSettings(); });
 $("whisperApiKey").addEventListener("change", e => { settings.whisper.apiKey = e.target.value.trim(); saveSettings(); });
 $("whisperModel").addEventListener("change", e => { settings.whisper.model = e.target.value.trim(); saveSettings(); });
@@ -1292,7 +1315,11 @@ class ChunkTranscriber {
       console.error("whisper error", e);
       this._errCount = (this._errCount || 0) + 1;
       const engineName = isLocal ? "ローカル faster-whisper" : "Whisper API";
-      if (this._errCount <= 2) toast(`${engineName} エラー (${this.source === "mic" ? "マイク" : "デスクトップ"}): ${e.message}`, "error", 6000);
+      let detail = e.message;
+      if (isLocal && /Failed to fetch|NetworkError|Load failed/i.test(detail)) {
+        detail = "サーバーに接続できません。start_local_whisper_windows.bat を実行し、黒い画面を閉じずに接続テストしてください";
+      }
+      if (this._errCount <= 2) toast(`${engineName} エラー (${this.source === "mic" ? "マイク" : "デスクトップ"}): ${detail}`, "error", 9000);
     }
   }
   stop() {

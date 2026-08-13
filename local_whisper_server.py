@@ -4,6 +4,7 @@ import argparse
 import os
 import tempfile
 from functools import lru_cache
+from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def allow_local_network_requests(request, call_next):
+    """Allow Chromium pages to reach this loopback service after PNA preflight."""
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
 SUPPORTED_MODELS = {"tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"}
 
 
@@ -35,7 +44,7 @@ def get_model(name: str) -> WhisperModel:
     return WhisperModel(name, device=args.device, compute_type=args.compute_type)
 
 
-def transcribe_file(path: str, model: str, language: str | None) -> str:
+def transcribe_file(path: str, model: str, language: Optional[str]) -> str:
     segments, _ = get_model(model).transcribe(
         path,
         language=language or None,
@@ -54,7 +63,7 @@ def health() -> dict[str, str]:
 async def transcribe(
     file: UploadFile = File(...),
     model: str = Form("small"),
-    language: str | None = Form(None),
+    language: Optional[str] = Form(None),
     response_format: str = Form("json"),
 ) -> dict[str, str]:
     del response_format  # The browser currently consumes JSON only.

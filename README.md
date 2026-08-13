@@ -52,14 +52,34 @@
 
 ブラウザだけでは Python の faster-whisper を直接実行できないため、付属のローカルプロセスを起動します。音声は `localhost` にだけ送られ、外部の文字起こしAPIやAPIキーは使いません。
 
+#### Windows（推奨・ダブルクリックで環境を準備）
+
+1. Python 3.10以上を [python.org](https://www.python.org/downloads/windows/) からインストールする。その際、インストーラーの **Add python.exe to PATH** をオンにする
+2. `start_local_whisper_windows.bat` をダブルクリックする
+3. 初回は仮想環境の作成と必要パッケージのインストールに数分かかる。`Starting local faster-whisper at http://127.0.0.1:8000` と表示された黒い画面を閉じない
+4. アプリの「⚙️ 設定」→「ローカル faster-whisper」で「接続テスト」を押す
+5. 接続成功後に録音を開始する
+
+この起動ファイルはプロジェクト専用の `.venv` を作り、`fastapi`、`faster-whisper` など不足している環境を自動的にインストールします。エラー時には画面を閉じずに停止するため、表示内容を確認できます。
+
+#### macOS / Linux（手動セットアップ）
+
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements-local-whisper.txt
 python local_whisper_server.py
 ```
 
 初回の文字起こし時には選択したモデルがダウンロードされます。アプリの「⚙️ 設定」でエンジンを「ローカル faster-whisper」にし、URL（既定 `http://localhost:8000`）とモデルを選択してください。NVIDIA GPUを明示的に使う場合は `python local_whisper_server.py --device cuda --compute-type float16`、CPUで軽量に動かす場合は `--device cpu --compute-type int8` を指定できます。
+
+#### `ModuleNotFoundError: No module named 'fastapi'` / `Failed to fetch` の場合
+
+- `ModuleNotFoundError` は、必要なPythonパッケージがまだインストールされていないことを示します。IDLEの「Run Module」や `local_whisper_server.py` の直接ダブルクリックではなく、Windowsでは `start_local_whisper_windows.bat` を実行してください
+- `Failed to fetch` は、多くの場合サーバーが起動していないために表示されます。起動用の黒い画面を閉じず、設定画面の「接続テスト」が成功することを確認してください
+- ブラウザで <http://127.0.0.1:8000/health> を開き、`{"status":"ok"}` が表示されればサーバーは正常です
+- URL欄は `http://localhost:8000` または `http://127.0.0.1:8000` とします。末尾に `/v1` は付けません
+- アプリ自体も `python3 -m http.server 8080`（Windowsでは `py -3 -m http.server 8080`）で配信し、ChromeまたはEdgeから `http://localhost:8080` を開くことを推奨します
 
 #### 「Unable to load a worklet's module」と表示される場合
 
