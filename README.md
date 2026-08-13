@@ -8,8 +8,9 @@
 
 - 🎤 **マイク + 🖥️ デスクトップ音声の同時キャプチャ**(Web Audio APIでミックスして録音・保存)
 - 🔇 **3段階のマイクノイズ除去** — 「強」ではブラウザ内蔵処理に声帯域フィルターと適応型ノイズゲートを重ね、サーキュレーターなどの定常音を低減
-- 📝 **リアルタイム文字起こし**(3エンジン切り替え)
+- 📝 **リアルタイム文字起こし**(4エンジン切り替え)
   - **ブラウザ内蔵 (Web Speech API)** — 無料・設定不要。マイク音声のみ(Chrome / Edge / Android Chrome)
+  - **ローカル faster-whisper** — クラウドAPI・APIキー不要。端末内でマイクとデスクトップ音声を文字起こし
   - **Whisper互換API** — マイクとデスクトップ音声を*別々に*文字起こしし、`[マイク]` / `[デスクトップ]` の話者ラベル付きで表示(OpenAI / Groq / ローカルWhisperサーバー対応)
   - **ハイブリッド** — マイクは内蔵エンジン(低遅延・無料)、デスクトップ音声はWhisper API
 - 📋 **ワンクリック議事録生成** — 文字起こし全文をAIに渡し、概要・決定事項・TODOを整理(ストリーミング表示、プロンプト編集可)
@@ -18,7 +19,7 @@
   - **OpenAI** / **Groq** / **Anthropic (Claude)** / 任意のOpenAI互換API
 - 📱 **タブレット対応** — レスポンシブUI・44px以上のタッチターゲット・録音中の画面スリープ防止(Wake Lock)
 - 💾 録音音声(**MP3**・どこでも再生可/webm切替可)・文字起こし(.md)・議事録(.md)のダウンロード、タイムスタンプ付き表示、入力レベルメーター
-- 🔒 データはすべてブラウザ内で処理。外部送信されるのは自分で設定したAPIへの音声チャンク/テキストのみ。設定は localStorage に保存
+- 🔒 データはブラウザ内、または自分で起動したローカル faster-whisper で処理。外部送信されるのは自分で設定したAPIへの音声チャンク/テキストのみ。設定は localStorage に保存
 
 ## 🚀 使い方
 
@@ -46,6 +47,28 @@
 1. ⚙️ **設定** タブで議事録AIを設定(下記)
 2. 📋 **議事録** タブ → **✨ 議事録を作成** をクリック
 3. 生成された議事録をコピー / .md でダウンロード
+
+### ローカル faster-whisper を使う（クラウドAPI不要）
+
+ブラウザだけでは Python の faster-whisper を直接実行できないため、付属のローカルプロセスを起動します。音声は `localhost` にだけ送られ、外部の文字起こしAPIやAPIキーは使いません。
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements-local-whisper.txt
+python local_whisper_server.py
+```
+
+初回の文字起こし時には選択したモデルがダウンロードされます。アプリの「⚙️ 設定」でエンジンを「ローカル faster-whisper」にし、URL（既定 `http://localhost:8000`）とモデルを選択してください。NVIDIA GPUを明示的に使う場合は `python local_whisper_server.py --device cuda --compute-type float16`、CPUで軽量に動かす場合は `--device cpu --compute-type int8` を指定できます。
+
+#### 「Unable to load a worklet's module」と表示される場合
+
+これは faster-whisper の設定ではなく、マイクの「強」ノイズ除去に使う AudioWorklet をブラウザが読み込めない場合に発生するエラーです。更新後のアプリでは自動的にブラウザ標準のノイズ除去へ切り替えて録音を続行します。回避したい場合は、次のいずれかを行ってください。
+
+- `index.html` の直接起動（`file://`）ではなく、リポジトリで `python3 -m http.server 8080` を実行し、ChromeまたはEdgeで `http://localhost:8080` を開く
+- 「⚙️ 設定」→「マイクのノイズ除去」を「標準」にする（AudioWorkletを使用しません）
+
+なお、ローカル faster-whisper を選ぶ場合は、別のターミナルで `python local_whisper_server.py` も起動したままにしてください。
 
 ## ⚙️ AI設定
 
