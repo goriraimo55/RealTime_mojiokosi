@@ -276,6 +276,7 @@
     </div>
     <div class="spacer"></div>
     <button class="primary big" id="startBtn">● 録音開始</button>
+    <button class="big" id="pauseBtn" style="display:none">⏸ 一時停止</button>
     <button class="danger big" id="stopBtn" style="display:none">■ 停止</button>
   </div>
 
@@ -1031,6 +1032,12 @@ if (!hasDisplayCapture) {
  * ======================================================= */
 const entries = []; // { t: seconds, source: 'mic'|'desk', text }
 let sessionStart = 0;
+let pausedAt = 0, pausedTotal = 0;
+
+function sessionElapsed() {
+  const end = pausedAt || Date.now();
+  return Math.max(0, (end - sessionStart - pausedTotal) / 1000);
+}
 
 function addEntry(t, source, text) {
   text = (text || "").trim();
@@ -1105,7 +1112,7 @@ let micStream = null, micRawStream = null, deskStream = null, displayStream = nu
 let noiseWorkletUrl = null;
 let mixedRecorder = null, mixedChunks = [], mixedMime = "";
 let mp3Encoder = null, mp3Parts = [], pcmNode = null;
-let running = false;
+let running = false, paused = false;
 let timerInt = null, meterInt = null;
 let analysers = {}; // { mic, desk }
 let wakeLock = null;
@@ -1218,7 +1225,7 @@ function startWebSpeech() {
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const r = ev.results[i];
       if (r.isFinal) {
-        addEntry((Date.now() - sessionStart) / 1000, "mic", r[0].transcript);
+        if (!paused) addEntry(sessionElapsed(), "mic", r[0].transcript);
       } else {
         interim += r[0].transcript;
       }
@@ -1272,7 +1279,7 @@ class ChunkTranscriber {
     const mime = pickMime();
     const chunks = [];
     this.peak = 0;
-    const tStart = (Date.now() - sessionStart) / 1000;
+    const tStart = sessionElapsed();
     let rec;
     try {
       rec = new MediaRecorder(this.stream, mime ? { mimeType: mime } : undefined);
@@ -1327,6 +1334,16 @@ class ChunkTranscriber {
     clearTimeout(this.timer);
     clearInterval(this.levelInt);
     if (this.recorder && this.recorder.state !== "inactive") this.recorder.stop(); // 最後のチャンクを送信
+  }
+  pause() {
+    this.running = false;
+    clearTimeout(this.timer);
+    clearInterval(this.levelInt);
+    if (this.recorder && this.recorder.state !== "inactive") this.recorder.stop();
+  }
+  resume() {
+    if (this.running) return;
+    this.start();
   }
 }
 
@@ -1401,13 +1418,21 @@ async function startSession() {
   }
 
   sessionStart = Date.now();
+  pausedAt = pausedTotal = 0;
   running = true;
+  paused = false;
 
   // --- レベルメーター ---
   if (micStream) analysers.mic = makeAnalyser(micStream);
   if (deskStream) analysers.desk = makeAnalyser(deskStream);
   const disp = { mic: 0, desk: 0 }; // 減衰付きピーク表示
   meterInt = setInterval(() => {
+    if (paused) {
+      disp.mic = disp.desk = 0;
+      $("micMeter").style.width = "0%";
+      $("deskMeter").style.width = "0%";
+      return;
+    }
     disp.mic = Math.max(levelOf(analysers.mic), disp.mic * 0.85);
     disp.desk = Math.max(levelOf(analysers.desk), disp.desk * 0.85);
     $("micMeter").style.width = Math.min(100, disp.mic * 300) + "%";
@@ -1436,6 +1461,7 @@ async function startSession() {
       mp3Parts = [];
       const int16 = new Int16Array(4096);
       pcmNode.onaudioprocess = (e) => {
+        if (paused) return;
         const input = e.inputBuffer.getChannelData(0);
         for (let i = 0; i < input.length; i++) {
           const s = Math.max(-1, Math.min(1, input[i]));
@@ -1475,7 +1501,7 @@ async function startSession() {
   chunkers.forEach(c => c.start());
 
   // --- タイマー / 画面スリープ防止 ---
-  timerInt = setInterval(() => { $("timer").textContent = fmtTime((Date.now() - sessionStart) / 1000); }, 500);
+  timerInt = setInterval(() => { $("timer").textContent = fmtTime(sessionElapsed()); }, 500);
   if (navigator.wakeLock) {
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch {}
   }
@@ -1484,9 +1510,40 @@ async function startSession() {
   $("statusText").textContent = "録音中";
   $("startBtn").style.display = "none";
   $("startBtn").disabled = false;
+  $("pauseBtn").style.display = "";
+  $("pauseBtn").textContent = "⏸ 一時停止";
   $("stopBtn").style.display = "";
   $("audioDownloadArea").innerHTML = "";
   toast("録音を開始しました", "ok", 2500);
+}
+
+function togglePause() {
+  if (!running) return;
+  if (!paused) {
+    paused = true;
+    pausedAt = Date.now();
+    stopWebSpeech();
+    chunkers.forEach(c => c.pause());
+    if (mixedRecorder && mixedRecorder.state === "recording") mixedRecorder.pause();
+    $("statusDot").classList.remove("rec");
+    $("statusText").textContent = "一時停止中";
+    $("pauseBtn").textContent = "▶ 再開";
+    $("micMeter").style.width = "0%";
+    $("deskMeter").style.width = "0%";
+    toast("録音と文字起こしを一時停止しました", "ok", 2500);
+  } else {
+    pausedTotal += Date.now() - pausedAt;
+    pausedAt = 0;
+    paused = false;
+    const engine = settings.sttEngine;
+    if (micStream && (engine === "webspeech" || engine === "hybrid")) startWebSpeech();
+    chunkers.forEach(c => c.resume());
+    if (mixedRecorder && mixedRecorder.state === "paused") mixedRecorder.resume();
+    $("statusDot").classList.add("rec");
+    $("statusText").textContent = "録音中";
+    $("pauseBtn").textContent = "⏸ 一時停止";
+    toast("録音と文字起こしを再開しました", "ok", 2500);
+  }
 }
 
 function showAudioDownload(blob, name) {
@@ -1509,6 +1566,7 @@ function cleanupStreams() {
 
 function stopSession() {
   running = false;
+  paused = false;
   stopWebSpeech();
   chunkers.forEach(c => c.stop());
   chunkers = [];
@@ -1544,11 +1602,13 @@ function stopSession() {
   $("statusDot").classList.remove("rec");
   $("statusText").textContent = "待機中";
   $("startBtn").style.display = "";
+  $("pauseBtn").style.display = "none";
   $("stopBtn").style.display = "none";
   toast("録音を停止しました。Whisper使用時は最後のチャンクの結果が数秒後に届くことがあります。", "ok", 4000);
 }
 
 $("startBtn").addEventListener("click", startSession);
+$("pauseBtn").addEventListener("click", togglePause);
 $("stopBtn").addEventListener("click", stopSession);
 
 window.addEventListener("beforeunload", (e) => {
