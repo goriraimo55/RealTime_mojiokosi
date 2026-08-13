@@ -333,6 +333,7 @@
         <label class="field">エンジン
           <select id="sttEngine">
             <option value="webspeech">ブラウザ内蔵 (Web Speech API・無料・マイクのみ)</option>
+            <option value="fasterwhisper">ローカル faster-whisper (APIキー不要・マイク+デスクトップ)</option>
             <option value="whisper">Whisper互換API (マイク+デスクトップ・話者ラベル付き)</option>
             <option value="hybrid">ハイブリッド (マイク=内蔵 / デスクトップ=Whisper)</option>
           </select>
@@ -366,6 +367,26 @@
           </select>
         </label>
         <span class="note">ブラウザ内蔵エンジンは Chrome / Edge / Android Chrome で動作します。デスクトップ音声も文字起こししたい場合は Whisper互換API か ハイブリッド を選んでください。</span>
+      </fieldset>
+
+      <fieldset>
+        <legend>ローカル faster-whisper (音声認識)</legend>
+        <label class="field">ローカルサーバーURL
+          <input type="text" id="localWhisperUrl" placeholder="http://localhost:8000">
+        </label>
+        <label class="field">モデル
+          <select id="localWhisperModel">
+            <option value="tiny">tiny (最軽量)</option>
+            <option value="base">base</option>
+            <option value="small">small (推奨)</option>
+            <option value="medium">medium</option>
+            <option value="large-v3">large-v3 (高精度・高負荷)</option>
+            <option value="large-v3-turbo">large-v3-turbo (高速・高精度)</option>
+          </select>
+        </label>
+        <button class="small" id="testLocalWhisperBtn">🔌 ローカルサーバーに接続テスト</button>
+        <span class="note" id="localWhisperStatus"></span>
+        <span class="note">付属の <code>local_whisper_server.py</code> を起動すると、音声は端末内だけで処理されます。クラウドAPIやAPIキーは不要です。</span>
       </fieldset>
 
       <fieldset>
@@ -871,6 +892,7 @@ const defaultSettings = () => ({
   chunkSec: 15,
   audioFormat: "mp3",
   noiseSuppressionMode: "strong",
+  localWhisper: { baseUrl: "http://localhost:8000", model: "small" },
   whisper: { baseUrl: "", apiKey: "", model: "whisper-1" },
   llm: { provider: "lmstudio", baseUrl: PROVIDER_PRESETS.lmstudio.baseUrl, apiKey: "", model: "" },
   prompt: DEFAULT_PROMPT,
@@ -880,6 +902,7 @@ let settings = defaultSettings();
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
   if (saved) settings = { ...defaultSettings(), ...saved,
+    localWhisper: { ...defaultSettings().localWhisper, ...(saved.localWhisper||{}) },
     whisper: { ...defaultSettings().whisper, ...(saved.whisper||{}) },
     llm: { ...defaultSettings().llm, ...(saved.llm||{}) } };
 } catch {}
@@ -910,6 +933,8 @@ function bindSettingsUI() {
   $("chunkSec").value = settings.chunkSec;
   $("audioFormat").value = settings.audioFormat;
   $("noiseSuppressionMode").value = settings.noiseSuppressionMode;
+  $("localWhisperUrl").value = settings.localWhisper.baseUrl;
+  $("localWhisperModel").value = settings.localWhisper.model;
   $("whisperBaseUrl").value = settings.whisper.baseUrl;
   $("whisperApiKey").value = settings.whisper.apiKey;
   $("whisperModel").value = settings.whisper.model;
@@ -927,6 +952,29 @@ $("sttLang").addEventListener("change", e => { settings.lang = e.target.value; s
 $("chunkSec").addEventListener("change", e => { settings.chunkSec = Math.min(60, Math.max(5, +e.target.value || 15)); e.target.value = settings.chunkSec; saveSettings(); });
 $("audioFormat").addEventListener("change", e => { settings.audioFormat = e.target.value; saveSettings(); });
 $("noiseSuppressionMode").addEventListener("change", e => { settings.noiseSuppressionMode = e.target.value; saveSettings(); });
+$("localWhisperUrl").addEventListener("change", e => { settings.localWhisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.localWhisper.baseUrl; saveSettings(); });
+$("localWhisperModel").addEventListener("change", e => { settings.localWhisper.model = e.target.value; saveSettings(); });
+$("testLocalWhisperBtn").addEventListener("click", async () => {
+  const button = $("testLocalWhisperBtn");
+  const status = $("localWhisperStatus");
+  const base = settings.localWhisper.baseUrl;
+  if (!base) return toast("ローカル faster-whisper のURLを入力してください", "warn");
+  button.disabled = true;
+  status.textContent = "接続確認中…";
+  try {
+    const res = await fetch(base + "/health");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.status !== "ok") throw new Error("応答内容が不正です");
+    status.textContent = "✅ 接続できました。このターミナルを開いたまま録音してください。";
+    toast("ローカル faster-whisper に接続できました", "ok");
+  } catch (error) {
+    status.textContent = "❌ 接続できません。Windows用起動ファイルを実行し、ターミナルを開いたままにしてください。";
+    toast(`ローカル faster-whisper に接続できません: ${error.message}`, "error", 8000);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("whisperBaseUrl").addEventListener("change", e => { settings.whisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.whisper.baseUrl; saveSettings(); });
 $("whisperApiKey").addEventListener("change", e => { settings.whisper.apiKey = e.target.value.trim(); saveSettings(); });
 $("whisperModel").addEventListener("change", e => { settings.whisper.model = e.target.value.trim(); saveSettings(); });
@@ -952,7 +1000,7 @@ $("resetSettingsBtn").addEventListener("click", () => {
 });
 
 function updateEngineHint() {
-  const names = { webspeech: "エンジン: ブラウザ内蔵", whisper: "エンジン: Whisper API", hybrid: "エンジン: ハイブリッド" };
+  const names = { webspeech: "エンジン: ブラウザ内蔵", fasterwhisper: "エンジン: ローカル faster-whisper", whisper: "エンジン: Whisper API", hybrid: "エンジン: ハイブリッド" };
   $("engineHint").textContent = names[settings.sttEngine] || "";
 }
 
@@ -1118,7 +1166,21 @@ async function createStrongNoiseSuppressedStream(stream) {
     }
     registerProcessor("adaptive-noise-gate", AdaptiveNoiseGate);`;
   noiseWorkletUrl = URL.createObjectURL(new Blob([processor], { type: "text/javascript" }));
-  await audioCtx.audioWorklet.addModule(noiseWorkletUrl);
+  try {
+    await audioCtx.audioWorklet.addModule(noiseWorkletUrl);
+  } catch (error) {
+    // file:// で開いた場合や、ブラウザのセキュリティーポリシーが blob: の
+    // AudioWorklet を拒否する場合がある。ノイズ除去の補助機能だけを諦め、
+    // 録音・文字起こしそのものはブラウザ標準処理で続行する。
+    console.warn("AudioWorklet module could not be loaded; using standard noise suppression", error);
+    URL.revokeObjectURL(noiseWorkletUrl);
+    noiseWorkletUrl = null;
+    toast("高度なノイズ除去を読み込めなかったため、標準のノイズ除去で続行します。必要に応じて localhost で開いてください", "warn", 8000);
+    return stream;
+  }
+  // モジュールは AudioWorkletGlobalScope に読み込まれたため、blob URL は不要。
+  URL.revokeObjectURL(noiseWorkletUrl);
+  noiseWorkletUrl = null;
 
   const source = audioCtx.createMediaStreamSource(stream);
   const highpass = audioCtx.createBiquadFilter();
@@ -1232,17 +1294,19 @@ class ChunkTranscriber {
     this.timer = setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, settings.chunkSec * 1000);
   }
   async _send(blob, tStart, mime) {
-    const base = settings.whisper.baseUrl;
+    const isLocal = settings.sttEngine === "fasterwhisper";
+    const config = isLocal ? settings.localWhisper : settings.whisper;
+    const base = config.baseUrl;
     if (!base) return;
     const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
     const fd = new FormData();
     fd.append("file", blob, `chunk.${ext}`);
-    fd.append("model", settings.whisper.model || "whisper-1");
+    fd.append("model", config.model || (isLocal ? "small" : "whisper-1"));
     fd.append("language", (settings.lang || "ja").split("-")[0]);
     fd.append("response_format", "json");
     try {
       const headers = {};
-      if (settings.whisper.apiKey) headers["Authorization"] = "Bearer " + settings.whisper.apiKey;
+      if (!isLocal && settings.whisper.apiKey) headers["Authorization"] = "Bearer " + settings.whisper.apiKey;
       const res = await fetch(base + "/audio/transcriptions", { method: "POST", headers, body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       const data = await res.json();
@@ -1250,7 +1314,12 @@ class ChunkTranscriber {
     } catch (e) {
       console.error("whisper error", e);
       this._errCount = (this._errCount || 0) + 1;
-      if (this._errCount <= 2) toast(`Whisper API エラー (${this.source === "mic" ? "マイク" : "デスクトップ"}): ${e.message}`, "error", 6000);
+      const engineName = isLocal ? "ローカル faster-whisper" : "Whisper API";
+      let detail = e.message;
+      if (isLocal && /Failed to fetch|NetworkError|Load failed/i.test(detail)) {
+        detail = "サーバーに接続できません。start_local_whisper_windows.bat を実行し、黒い画面を閉じずに接続テストしてください";
+      }
+      if (this._errCount <= 2) toast(`${engineName} エラー (${this.source === "mic" ? "マイク" : "デスクトップ"}): ${detail}`, "error", 9000);
     }
   }
   stop() {
@@ -1272,6 +1341,11 @@ async function startSession() {
   if (!useMic && !useDesk) return toast("マイクまたはデスクトップ音声のどちらかを有効にしてください", "warn");
 
   const engine = settings.sttEngine;
+  if (engine === "fasterwhisper" && !settings.localWhisper.baseUrl) {
+    toast("ローカル faster-whisper のURLが未設定です。⚙️設定タブで入力してください。", "error", 6000);
+    document.querySelector('[data-tab="settingsPanel"]').click();
+    return;
+  }
   if ((engine === "whisper" || (engine === "hybrid" && useDesk)) && !settings.whisper.baseUrl) {
     toast("Whisper互換APIのベースURLが未設定です。⚙️設定タブで入力してください。", "error", 6000);
     document.querySelector('[data-tab="settingsPanel"]').click();
