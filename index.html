@@ -1733,6 +1733,25 @@ function anthropicResponseText(ev) {
   return contentText(ev && ev.content);
 }
 
+function isEventStream(res) {
+  return (res.headers.get("content-type") || "").toLowerCase().includes("text/event-stream");
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => typeof part === "string" ? part : (part && part.text) || "").join("");
+}
+
+function openAiResponseText(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  return contentText(choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content)));
+}
+
+function anthropicResponseText(ev) {
+  return contentText(ev && ev.content);
+}
+
 async function* sseLines(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
