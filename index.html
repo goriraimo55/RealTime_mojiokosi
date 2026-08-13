@@ -1659,6 +1659,12 @@ async function* streamChat(promptText, signal) {
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!isEventStream(res)) {
+      const ev = await res.json();
+      const text = anthropicResponseText(ev);
+      if (text) yield text;
+      return;
+    }
     for await (const data of sseLines(res, signal)) {
       let ev; try { ev = JSON.parse(data); } catch { continue; }
       if (ev.type === "content_block_delta" && ev.delta && ev.delta.text) yield ev.delta.text;
@@ -1678,12 +1684,37 @@ async function* streamChat(promptText, signal) {
     }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  if (!isEventStream(res)) {
+    const ev = await res.json();
+    const text = openAiResponseText(ev);
+    if (text) yield text;
+    return;
+  }
   for await (const data of sseLines(res, signal)) {
     if (data === "[DONE]") return;
     let ev; try { ev = JSON.parse(data); } catch { continue; }
-    const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
-    if (delta && delta.content) yield delta.content;
+    const text = openAiResponseText(ev);
+    if (text) yield text;
   }
+}
+
+function isEventStream(res) {
+  return (res.headers.get("content-type") || "").toLowerCase().includes("text/event-stream");
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => typeof part === "string" ? part : (part && part.text) || "").join("");
+}
+
+function openAiResponseText(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  return contentText(choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content)));
+}
+
+function anthropicResponseText(ev) {
+  return contentText(ev && ev.content);
 }
 
 async function* sseLines(res) {
@@ -1694,13 +1725,16 @@ async function* sseLines(res) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
+    const lines = buf.split(/\r?\n/);
     buf = lines.pop();
     for (const line of lines) {
       const m = line.match(/^data:\s?(.*)$/);
       if (m) yield m[1];
     }
   }
+  buf += decoder.decode();
+  const m = buf.match(/^data:\s?(.*)$/);
+  if (m) yield m[1];
 }
 
 async function generateMinutes() {
@@ -1722,6 +1756,9 @@ async function generateMinutes() {
       minutesMarkdown += chunk;
       out.innerHTML = renderMarkdown(minutesMarkdown);
       out.scrollTop = out.scrollHeight;
+    }
+    if (!minutesMarkdown.trim()) {
+      throw new Error("AIから議事録本文が返されませんでした。モデル設定またはサーバーのログを確認してください。");
     }
     $("genStatus").textContent = "✅ 完了";
     toast("議事録を作成しました", "ok");
