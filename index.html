@@ -408,6 +408,7 @@
           <button class="small" id="fetchModelsBtn" title="サーバーからモデル一覧を取得">一覧取得</button>
         </div>
         <span class="note" id="llmNote"></span>
+        <span class="note">LM Studio の <code>Reachable at:</code> に表示された URL はそのまま入力できます。末尾の <code>/v1</code> は必要に応じて自動補完します。</span>
       </fieldset>
 
       <fieldset>
@@ -885,6 +886,24 @@ try {
 
 function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
 
+function normalizeLlmBaseUrl(value, provider) {
+  const baseUrl = value.trim().replace(/\/+$/, "");
+  if (provider !== "lmstudio" || !baseUrl) return baseUrl;
+  try {
+    const url = new URL(baseUrl);
+    // LM Studio's "Reachable at" value is the server origin, while its
+    // OpenAI-compatible endpoints live below /v1.
+    if (!url.pathname || url.pathname === "/") url.pathname = "/v1";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return baseUrl;
+  }
+}
+
+function llmApiUrl(path) {
+  return normalizeLlmBaseUrl(settings.llm.baseUrl, settings.llm.provider) + path;
+}
+
 function bindSettingsUI() {
   $("sttEngine").value = settings.sttEngine;
   $("sttLang").value = settings.lang;
@@ -911,7 +930,11 @@ $("noiseSuppressionMode").addEventListener("change", e => { settings.noiseSuppre
 $("whisperBaseUrl").addEventListener("change", e => { settings.whisper.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.whisper.baseUrl; saveSettings(); });
 $("whisperApiKey").addEventListener("change", e => { settings.whisper.apiKey = e.target.value.trim(); saveSettings(); });
 $("whisperModel").addEventListener("change", e => { settings.whisper.model = e.target.value.trim(); saveSettings(); });
-$("llmBaseUrl").addEventListener("change", e => { settings.llm.baseUrl = e.target.value.trim().replace(/\/+$/, ""); e.target.value = settings.llm.baseUrl; saveSettings(); });
+$("llmBaseUrl").addEventListener("change", e => {
+  settings.llm.baseUrl = normalizeLlmBaseUrl(e.target.value, settings.llm.provider);
+  e.target.value = settings.llm.baseUrl;
+  saveSettings();
+});
 $("llmApiKey").addEventListener("change", e => { settings.llm.apiKey = e.target.value.trim(); saveSettings(); });
 $("llmModel").addEventListener("change", e => { settings.llm.model = e.target.value.trim(); saveSettings(); });
 $("promptTemplate").addEventListener("change", e => { settings.prompt = e.target.value; saveSettings(); });
@@ -1470,7 +1493,7 @@ document.addEventListener("visibilitychange", async () => {
 let genAbort = null;
 let minutesMarkdown = "";
 
-function llmHeaders() {
+function llmHeaders(includeContentType = true) {
   const { provider, apiKey } = settings.llm;
   if (provider === "anthropic") {
     return {
@@ -1480,7 +1503,8 @@ function llmHeaders() {
       "anthropic-dangerous-direct-browser-access": "true",
     };
   }
-  const h = { "Content-Type": "application/json" };
+  const h = {};
+  if (includeContentType) h["Content-Type"] = "application/json";
   if (apiKey) h["Authorization"] = "Bearer " + apiKey;
   return h;
 }
@@ -1491,7 +1515,7 @@ async function* streamChat(promptText, signal) {
   if (!model) throw new Error("議事録AIのモデル名が未設定です(⚙️設定タブ)");
 
   if (provider === "anthropic") {
-    const res = await fetch(baseUrl + "/messages", {
+    const res = await fetch(llmApiUrl("/messages"), {
       method: "POST", headers: llmHeaders(), signal,
       body: JSON.stringify({
         model,
@@ -1510,7 +1534,7 @@ async function* streamChat(promptText, signal) {
   }
 
   // OpenAI 互換 (LM Studio / Ollama / OpenAI / Groq / custom)
-  const res = await fetch(baseUrl + "/chat/completions", {
+  const res = await fetch(llmApiUrl("/chat/completions"), {
     method: "POST", headers: llmHeaders(), signal,
     body: JSON.stringify({
       model,
@@ -1602,7 +1626,9 @@ $("fetchModelsBtn").addEventListener("click", async () => {
   if (!baseUrl) return toast("先にベースURLを入力してください", "warn");
   $("fetchModelsBtn").disabled = true;
   try {
-    const res = await fetch(baseUrl + "/models", { headers: llmHeaders() });
+    // A Content-Type header on a GET causes an unnecessary CORS preflight.
+    // In particular, older LM Studio versions reject OPTIONS /models.
+    const res = await fetch(llmApiUrl("/models"), { headers: llmHeaders(false) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const models = (data.data || data.models || []).map(m => m.id || m.name).filter(Boolean);
@@ -1612,6 +1638,9 @@ $("fetchModelsBtn").addEventListener("click", async () => {
     toast(`${models.length} 件のモデルを取得しました(モデル欄で選択できます)`, "ok");
   } catch (e) {
     toast("モデル一覧の取得に失敗: " + e.message, "error", 7000);
+    if (/Failed to fetch|NetworkError|Load failed/i.test(e.message) && settings.llm.provider === "lmstudio") {
+      toast("LM Studio のサーバー起動と CORS 設定を確認してください。Reachable at の URL は /v1 なしでも入力できます。", "warn", 9000);
+    }
   } finally {
     $("fetchModelsBtn").disabled = false;
   }
