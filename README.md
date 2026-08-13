@@ -8,8 +8,9 @@
 
 - 🎤 **マイク + 🖥️ デスクトップ音声の同時キャプチャ**(Web Audio APIでミックスして録音・保存)
 - 🔇 **3段階のマイクノイズ除去** — 「強」ではブラウザ内蔵処理に声帯域フィルターと適応型ノイズゲートを重ね、サーキュレーターなどの定常音を低減
-- 📝 **リアルタイム文字起こし**(3エンジン切り替え)
+- 📝 **リアルタイム文字起こし**(4エンジン切り替え)
   - **ブラウザ内蔵 (Web Speech API)** — 無料・設定不要。マイク音声のみ(Chrome / Edge / Android Chrome)
+  - **ローカル faster-whisper** — クラウドAPI・APIキー不要。端末内でマイクとデスクトップ音声を文字起こし
   - **Whisper互換API** — マイクとデスクトップ音声を*別々に*文字起こしし、`[マイク]` / `[デスクトップ]` の話者ラベル付きで表示(OpenAI / Groq / ローカルWhisperサーバー対応)
   - **ハイブリッド** — マイクは内蔵エンジン(低遅延・無料)、デスクトップ音声はWhisper API
 - 📋 **ワンクリック議事録生成** — 文字起こし全文をAIに渡し、概要・決定事項・TODOを整理(ストリーミング表示、プロンプト編集可)
@@ -18,7 +19,7 @@
   - **OpenAI** / **Groq** / **Anthropic (Claude)** / 任意のOpenAI互換API
 - 📱 **タブレット対応** — レスポンシブUI・44px以上のタッチターゲット・録音中の画面スリープ防止(Wake Lock)
 - 💾 録音音声(**MP3**・どこでも再生可/webm切替可)・文字起こし(.md)・議事録(.md)のダウンロード、タイムスタンプ付き表示、入力レベルメーター
-- 🔒 データはすべてブラウザ内で処理。外部送信されるのは自分で設定したAPIへの音声チャンク/テキストのみ。設定は localStorage に保存
+- 🔒 データはブラウザ内、または自分で起動したローカル faster-whisper で処理。外部送信されるのは自分で設定したAPIへの音声チャンク/テキストのみ。設定は localStorage に保存
 
 ## 🚀 使い方
 
@@ -37,7 +38,7 @@
 3. デスクトップ音声を使う場合、画面共有ダイアログで **「タブ」または「画面全体」を選び、「音声も共有」に必ずチェック**
    - Chrome (Windows): 「画面全体」でシステム音声を共有可能
    - Chrome (macOS): 「タブ」の音声のみ共有可能(Meet/Zoomのタブなどを選択)
-4. 文字起こしがリアルタイムで流れます。**■ 停止** で終了(録音音声のダウンロードボタンが出ます)
+4. 文字起こしがリアルタイムで流れます。**⏸ 一時停止**では録音と文字起こしの両方を止め、**▶ 再開**で同じセッションを継続できます。**■ 停止**で終了します(録音音声のダウンロードボタンが出ます)
 
 > 録音は既定で **MP3**(モノラル128kbps・リアルタイムエンコード)で保存されます。⚙️設定の「録音の保存形式」で WebM/M4A に切り替え可能です。
 
@@ -46,6 +47,48 @@
 1. ⚙️ **設定** タブで議事録AIを設定(下記)
 2. 📋 **議事録** タブ → **✨ 議事録を作成** をクリック
 3. 生成された議事録をコピー / .md でダウンロード
+
+### ローカル faster-whisper を使う（クラウドAPI不要）
+
+ブラウザだけでは Python の faster-whisper を直接実行できないため、付属のローカルプロセスを起動します。音声は `localhost` にだけ送られ、外部の文字起こしAPIやAPIキーは使いません。
+
+#### Windows（推奨・ダブルクリックで環境を準備）
+
+1. Python 3.10以上を [python.org](https://www.python.org/downloads/windows/) からインストールする。その際、インストーラーの **Add python.exe to PATH** をオンにする
+2. `start_local_whisper_windows.bat` をダブルクリックする
+3. 初回は仮想環境の作成と必要パッケージのインストールに数分かかる。`Starting local faster-whisper at http://127.0.0.1:8000` と表示された黒い画面を閉じない
+4. アプリの「⚙️ 設定」→「ローカル faster-whisper」で「接続テスト」を押す
+5. 接続成功後に録音を開始する
+
+この起動ファイルはプロジェクト専用の `.venv` を作り、`fastapi`、`faster-whisper` など不足している環境を自動的にインストールします。エラー時には画面を閉じずに停止するため、表示内容を確認できます。
+
+#### macOS / Linux（手動セットアップ）
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-local-whisper.txt
+python local_whisper_server.py
+```
+
+初回の文字起こし時には選択したモデルがダウンロードされます。アプリの「⚙️ 設定」でエンジンを「ローカル faster-whisper」にし、URL（既定 `http://localhost:8000`）とモデルを選択してください。NVIDIA GPUを明示的に使う場合は `python local_whisper_server.py --device cuda --compute-type float16`、CPUで軽量に動かす場合は `--device cpu --compute-type int8` を指定できます。
+
+#### `ModuleNotFoundError: No module named 'fastapi'` / `Failed to fetch` の場合
+
+- `ModuleNotFoundError` は、必要なPythonパッケージがまだインストールされていないことを示します。IDLEの「Run Module」や `local_whisper_server.py` の直接ダブルクリックではなく、Windowsでは `start_local_whisper_windows.bat` を実行してください
+- `Failed to fetch` は、多くの場合サーバーが起動していないために表示されます。起動用の黒い画面を閉じず、設定画面の「接続テスト」が成功することを確認してください
+- ブラウザで <http://127.0.0.1:8000/health> を開き、`{"status":"ok"}` が表示されればサーバーは正常です
+- URL欄は `http://localhost:8000` または `http://127.0.0.1:8000` とします。末尾に `/v1` は付けません
+- アプリ自体も `python3 -m http.server 8080`（Windowsでは `py -3 -m http.server 8080`）で配信し、ChromeまたはEdgeから `http://localhost:8080` を開くことを推奨します
+
+#### 「Unable to load a worklet's module」と表示される場合
+
+これは faster-whisper の設定ではなく、マイクの「強」ノイズ除去に使う AudioWorklet をブラウザが読み込めない場合に発生するエラーです。更新後のアプリでは自動的にブラウザ標準のノイズ除去へ切り替えて録音を続行します。回避したい場合は、次のいずれかを行ってください。
+
+- `index.html` の直接起動（`file://`）ではなく、リポジトリで `python3 -m http.server 8080` を実行し、ChromeまたはEdgeで `http://localhost:8080` を開く
+- 「⚙️ 設定」→「マイクのノイズ除去」を「標準」にする（AudioWorkletを使用しません）
+
+なお、ローカル faster-whisper を選ぶ場合は、別のターミナルで `python local_whisper_server.py` も起動したままにしてください。
 
 ## ⚙️ AI設定
 
