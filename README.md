@@ -61,6 +61,15 @@ python local_whisper_server.py
 
 初回の文字起こし時には選択したモデルがダウンロードされます。アプリの「⚙️ 設定」でエンジンを「ローカル faster-whisper」にし、URL（既定 `http://localhost:8000`）とモデルを選択してください。NVIDIA GPUを明示的に使う場合は `python local_whisper_server.py --device cuda --compute-type float16`、CPUで軽量に動かす場合は `--device cpu --compute-type int8` を指定できます。
 
+#### 「Unable to load a worklet's module」と表示される場合
+
+これは faster-whisper の設定ではなく、マイクの「強」ノイズ除去に使う AudioWorklet をブラウザが読み込めない場合に発生するエラーです。更新後のアプリでは自動的にブラウザ標準のノイズ除去へ切り替えて録音を続行します。回避したい場合は、次のいずれかを行ってください。
+
+- `index.html` の直接起動（`file://`）ではなく、リポジトリで `python3 -m http.server 8080` を実行し、ChromeまたはEdgeで `http://localhost:8080` を開く
+- 「⚙️ 設定」→「マイクのノイズ除去」を「標準」にする（AudioWorkletを使用しません）
+
+なお、ローカル faster-whisper を選ぶ場合は、別のターミナルで `python local_whisper_server.py` も起動したままにしてください。
+
 ## ⚙️ AI設定
 
 ### LM Studio(ローカル・無料)

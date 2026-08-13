@@ -1143,7 +1143,21 @@ async function createStrongNoiseSuppressedStream(stream) {
     }
     registerProcessor("adaptive-noise-gate", AdaptiveNoiseGate);`;
   noiseWorkletUrl = URL.createObjectURL(new Blob([processor], { type: "text/javascript" }));
-  await audioCtx.audioWorklet.addModule(noiseWorkletUrl);
+  try {
+    await audioCtx.audioWorklet.addModule(noiseWorkletUrl);
+  } catch (error) {
+    // file:// で開いた場合や、ブラウザのセキュリティーポリシーが blob: の
+    // AudioWorklet を拒否する場合がある。ノイズ除去の補助機能だけを諦め、
+    // 録音・文字起こしそのものはブラウザ標準処理で続行する。
+    console.warn("AudioWorklet module could not be loaded; using standard noise suppression", error);
+    URL.revokeObjectURL(noiseWorkletUrl);
+    noiseWorkletUrl = null;
+    toast("高度なノイズ除去を読み込めなかったため、標準のノイズ除去で続行します。必要に応じて localhost で開いてください", "warn", 8000);
+    return stream;
+  }
+  // モジュールは AudioWorkletGlobalScope に読み込まれたため、blob URL は不要。
+  URL.revokeObjectURL(noiseWorkletUrl);
+  noiseWorkletUrl = null;
 
   const source = audioCtx.createMediaStreamSource(stream);
   const highpass = audioCtx.createBiquadFilter();
