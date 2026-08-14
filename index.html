@@ -1674,14 +1674,21 @@ async function* streamChat(promptText, signal) {
   }
 
   // OpenAI 互換 (LM Studio / Ollama / OpenAI / Groq / custom)
+  const requestBody = {
+    model,
+    stream: true,
+    temperature: 0.3,
+    messages: [{ role: "user", content: promptText }],
+  };
+  if (provider === "lmstudio") {
+    // Qwen thinking models can spend the whole token budget on hidden
+    // reasoning and consequently return no assistant content. LM Studio
+    // forwards these chat-template arguments to models that support them.
+    requestBody.chat_template_kwargs = { enable_thinking: false };
+  }
   const res = await fetch(llmApiUrl("/chat/completions"), {
     method: "POST", headers: llmHeaders(), signal,
-    body: JSON.stringify({
-      model,
-      stream: true,
-      temperature: 0.3,
-      messages: [{ role: "user", content: promptText }],
-    }),
+    body: JSON.stringify(requestBody),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   if (!isEventStream(res)) {
@@ -1714,38 +1721,30 @@ function isEventStream(res) {
 
 function contentText(content) {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => typeof part === "string" ? part : (part && part.text) || "").join("");
+  if (Array.isArray(content)) return content.map(contentText).join("");
+  if (!content || typeof content !== "object") return "";
+  // Some LM Studio model runtimes return a single structured text part
+  // instead of the string/array shape used by the OpenAI examples.
+  return contentText(content.text || content.output_text || content.value);
 }
 
 function openAiResponseText(ev) {
   const choice = ev && ev.choices && ev.choices[0];
-  return contentText(choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content)));
+  const choiceText = contentText(choice && (
+    (choice.delta && choice.delta.content) || (choice.message && choice.message.content) || choice.text
+  ));
+  if (choiceText) return choiceText;
+
+  // Also accept the event shapes used by newer OpenAI-compatible runtimes,
+  // e.g. {type:"response.output_text.delta", delta:"..."}.
+  if (ev && /output_text\.delta$/.test(ev.type) && typeof ev.delta === "string") return ev.delta;
+  return contentText(ev && (ev.output_text || ev.content || ev.text));
 }
 
 function openAiReasoningText(ev) {
   const choice = ev && ev.choices && ev.choices[0];
   const source = choice && (choice.delta || choice.message);
   return contentText(source && (source.reasoning_content || source.reasoning));
-}
-
-function anthropicResponseText(ev) {
-  return contentText(ev && ev.content);
-}
-
-function isEventStream(res) {
-  return (res.headers.get("content-type") || "").toLowerCase().includes("text/event-stream");
-}
-
-function contentText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => typeof part === "string" ? part : (part && part.text) || "").join("");
-}
-
-function openAiResponseText(ev) {
-  const choice = ev && ev.choices && ev.choices[0];
-  return contentText(choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content)));
 }
 
 function anthropicResponseText(ev) {
@@ -1763,12 +1762,12 @@ async function* sseLines(res) {
     const lines = buf.split(/\r?\n/);
     buf = lines.pop();
     for (const line of lines) {
-      const m = line.match(/^data:\s?(.*)$/);
+      const m = line.match(/^\s*data:\s?(.*)$/);
       if (m) yield m[1];
     }
   }
   buf += decoder.decode();
-  const m = buf.match(/^data:\s?(.*)$/);
+  const m = buf.match(/^\s*data:\s?(.*)$/);
   if (m) yield m[1];
 }
 
