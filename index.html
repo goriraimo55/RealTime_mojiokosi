@@ -1779,6 +1779,36 @@ function anthropicResponseText(ev) {
   return contentText(ev && ev.content);
 }
 
+function isEventStream(res) {
+  return (res.headers.get("content-type") || "").toLowerCase().includes("text/event-stream");
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(contentText).join("");
+  if (!content || typeof content !== "object") return "";
+  // Some LM Studio model runtimes return a single structured text part
+  // instead of the string/array shape used by the OpenAI examples.
+  return contentText(content.text || content.output_text || content.value);
+}
+
+function openAiResponseText(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  const choiceText = contentText(choice && (
+    (choice.delta && choice.delta.content) || (choice.message && choice.message.content) || choice.text
+  ));
+  if (choiceText) return choiceText;
+
+  // Also accept the event shapes used by newer OpenAI-compatible runtimes,
+  // e.g. {type:"response.output_text.delta", delta:"..."}.
+  if (ev && /output_text\.delta$/.test(ev.type) && typeof ev.delta === "string") return ev.delta;
+  return contentText(ev && (ev.output_text || ev.content || ev.text));
+}
+
+function anthropicResponseText(ev) {
+  return contentText(ev && ev.content);
+}
+
 async function* sseLines(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
