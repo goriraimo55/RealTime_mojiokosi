@@ -440,6 +440,7 @@
         <span class="note warn">⚠️ APIキーはこのブラウザの localStorage にのみ保存されます。共用端末では保存に注意してください。</span>
         <span class="note">💡 LM Studio を使う場合はサーバー設定で <b>CORS を有効化</b>してください(Developer → Settings → Enable CORS)。Ollama は <code>OLLAMA_ORIGINS=*</code> の設定が必要な場合があります。</span>
         <span class="note">💡 このページは HTTPS または localhost、もしくはファイルを直接開いた状態で動作します(マイク権限のため)。</span>
+        <span class="note">アプリ版: <code id="appVersion"></code></span>
       </fieldset>
 
     </div>
@@ -764,6 +765,8 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
 
 <script>
 "use strict";
+
+const APP_VERSION = "2026.08.15.2";
 
 /* =========================================================
  *  Utilities
@@ -1659,6 +1662,12 @@ async function* streamChat(promptText, signal) {
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!isEventStream(res)) {
+      const ev = await res.json();
+      const text = anthropicResponseText(ev);
+      if (text) yield text;
+      return;
+    }
     for await (const data of sseLines(res, signal)) {
       let ev; try { ev = JSON.parse(data); } catch { continue; }
       if (ev.type === "content_block_delta" && ev.delta && ev.delta.text) yield ev.delta.text;
@@ -1668,22 +1677,128 @@ async function* streamChat(promptText, signal) {
   }
 
   // OpenAI 互換 (LM Studio / Ollama / OpenAI / Groq / custom)
+  const finalAnswerInstruction = "思考過程や分析は出力せず、日本語の最終回答だけを出力してください。";
+  const userContent = provider === "lmstudio"
+    ? `${promptText}\n\n${finalAnswerInstruction}\n/no_think`
+    : promptText;
+  const requestBody = {
+    model,
+    stream: true,
+    max_tokens: 4096,
+    temperature: 0.3,
+    messages: [
+      { role: "system", content: finalAnswerInstruction },
+      { role: "user", content: userContent },
+    ],
+  };
+  if (provider === "lmstudio") {
+    // Qwen thinking models can spend the whole token budget on hidden
+    // reasoning and consequently return no assistant content. LM Studio
+    // forwards these chat-template arguments to models that support them.
+    requestBody.chat_template_kwargs = { enable_thinking: false };
+  }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(llmApiUrl("/chat/completions"), {
+      method: "POST", headers: llmHeaders(), signal,
+      body: JSON.stringify(requestBody),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+
+    let answerPart = "";
+    let finishReason = "";
+    if (!isEventStream(res)) {
+      const ev = await res.json();
+      answerPart = openAiResponseText(ev);
+      finishReason = openAiFinishReason(ev);
+      if (answerPart) yield answerPart;
+    } else {
+      for await (const data of sseLines(res, signal)) {
+        if (data === "[DONE]") break;
+        let ev; try { ev = JSON.parse(data); } catch { continue; }
+        const text = openAiResponseText(ev);
+        finishReason = openAiFinishReason(ev) || finishReason;
+        if (text) { answerPart += text; yield text; }
+      }
+    }
+
+    if (finishReason !== "length") return;
+    if (!answerPart || attempt === 3) {
+      throw new Error("AIの最大出力トークン数に達しました。LM StudioのContext Lengthを増やして再実行してください。");
+    }
+    requestBody.messages.push(
+      { role: "assistant", content: answerPart },
+      { role: "user", content: "直前の回答が途中で切れました。重複や前置きなしで、切れた箇所から議事録の残りだけを続けてください。\n/no_think" },
+    );
+  }
+}
+
+async function testLlmConnection(signal) {
+  const { provider, baseUrl, model } = settings.llm;
+  if (!baseUrl) throw new Error("議事録AIのベースURLが未設定です(⚙️設定タブ)");
+  if (!model) throw new Error("議事録AIのモデル名が未設定です(⚙️設定タブ)");
+
+  if (provider === "anthropic") {
+    const res = await fetch(llmApiUrl("/messages"), {
+      method: "POST", headers: llmHeaders(), signal,
+      body: JSON.stringify({
+        model,
+        max_tokens: 16,
+        stream: false,
+        messages: [{ role: "user", content: "「OK」とだけ返答してください。" }],
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return anthropicResponseText(await res.json());
+  }
+
+  const body = {
+    model,
+    stream: false,
+    max_tokens: 16,
+    messages: [{ role: "user", content: "思考過程を出力せず「OK」とだけ返答してください。\n/no_think" }],
+  };
+  if (provider === "lmstudio") body.chat_template_kwargs = { enable_thinking: false };
   const res = await fetch(llmApiUrl("/chat/completions"), {
     method: "POST", headers: llmHeaders(), signal,
-    body: JSON.stringify({
-      model,
-      stream: true,
-      temperature: 0.3,
-      messages: [{ role: "user", content: promptText }],
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  for await (const data of sseLines(res, signal)) {
-    if (data === "[DONE]") return;
-    let ev; try { ev = JSON.parse(data); } catch { continue; }
-    const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
-    if (delta && delta.content) yield delta.content;
-  }
+  return openAiResponseText(await res.json());
+}
+
+function isEventStream(res) {
+  return (res.headers.get("content-type") || "").toLowerCase().includes("text/event-stream");
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(contentText).join("");
+  if (!content || typeof content !== "object") return "";
+  // Some LM Studio model runtimes return a single structured text part
+  // instead of the string/array shape used by the OpenAI examples.
+  return contentText(content.text || content.output_text || content.value);
+}
+
+function openAiResponseText(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  const choiceText = contentText(choice && (
+    (choice.delta && choice.delta.content) || (choice.message && choice.message.content) || choice.text
+  ));
+  if (choiceText) return choiceText;
+
+  // Also accept the event shapes used by newer OpenAI-compatible runtimes,
+  // e.g. {type:"response.output_text.delta", delta:"..."}.
+  if (ev && /output_text\.delta$/.test(ev.type) && typeof ev.delta === "string") return ev.delta;
+  return contentText(ev && (ev.output_text || ev.content || ev.text));
+}
+
+function openAiFinishReason(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  return (choice && choice.finish_reason) || (ev && ev.stop_reason) || "";
+}
+
+function anthropicResponseText(ev) {
+  return contentText(ev && ev.content);
 }
 
 async function* sseLines(res) {
@@ -1694,13 +1809,16 @@ async function* sseLines(res) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
+    const lines = buf.split(/\r?\n/);
     buf = lines.pop();
     for (const line of lines) {
-      const m = line.match(/^data:\s?(.*)$/);
+      const m = line.match(/^\s*data:\s?(.*)$/);
       if (m) yield m[1];
     }
   }
+  buf += decoder.decode();
+  const m = buf.match(/^\s*data:\s?(.*)$/);
+  if (m) yield m[1];
 }
 
 async function generateMinutes() {
@@ -1722,6 +1840,9 @@ async function generateMinutes() {
       minutesMarkdown += chunk;
       out.innerHTML = renderMarkdown(minutesMarkdown);
       out.scrollTop = out.scrollHeight;
+    }
+    if (!minutesMarkdown.trim()) {
+      throw new Error("AIから議事録本文が返されませんでした。モデル設定またはサーバーのログを確認してください。");
     }
     $("genStatus").textContent = "✅ 完了";
     toast("議事録を作成しました", "ok");
@@ -1782,20 +1903,16 @@ $("fetchModelsBtn").addEventListener("click", async () => {
 
 $("testLlmBtn").addEventListener("click", async () => {
   $("testLlmBtn").disabled = true;
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 30000);
   try {
-    let reply = "";
-    const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), 30000);
-    for await (const chunk of streamChat("接続テストです。「OK」とだけ返答してください。", abort.signal)) {
-      reply += chunk;
-      if (reply.length > 40) { abort.abort(); break; }
-    }
-    clearTimeout(timeout);
+    const reply = await testLlmConnection(abort.signal);
     toast("✅ 接続成功: " + reply.trim().slice(0, 60), "ok", 5000);
   } catch (e) {
-    if (e.name !== "AbortError") toast("接続失敗: " + e.message, "error", 8000);
-    else toast("✅ 接続成功", "ok");
+    const message = e.name === "AbortError" ? "30秒以内に応答がありませんでした" : e.message;
+    toast("接続失敗: " + message, "error", 8000);
   } finally {
+    clearTimeout(timeout);
     $("testLlmBtn").disabled = false;
   }
 });
@@ -1804,6 +1921,7 @@ $("testLlmBtn").addEventListener("click", async () => {
  *  Init
  * ======================================================= */
 bindSettingsUI();
+$("appVersion").textContent = APP_VERSION;
 if (!window.isSecureContext) {
   toast("⚠️ 非セキュアな接続(http)ではマイクを利用できません。HTTPS か localhost、またはファイルを直接開いてください。", "warn", 10000);
 }
