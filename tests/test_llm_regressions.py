@@ -47,6 +47,37 @@ class LlmRegressionTests(unittest.TestCase):
         self.assertIn("await testLlmConnection(abort.signal)", handler)
         self.assertNotIn("streamChat(", handler)
 
+    def test_openai_stream_generator_yields_minutes_without_removed_state(self):
+        start = self.source.index("async function* streamChat")
+        end = self.source.index("\nasync function testLlmConnection", start)
+        stream_chat = self.source[start:end]
+        harness = f'''"use strict";
+const assert = require("node:assert/strict");
+const settings = {{llm: {{provider: "lmstudio", baseUrl: "http://localhost:1234/v1", model: "qwen"}}}};
+function llmApiUrl(path) {{ return settings.llm.baseUrl + path; }}
+function llmHeaders() {{ return {{"Content-Type": "application/json"}}; }}
+function isEventStream(res) {{ return res.headers.get("content-type").includes("text/event-stream"); }}
+function openAiResponseText(ev) {{ return ev.choices?.[0]?.delta?.content || ""; }}
+function anthropicResponseText() {{ return ""; }}
+async function* sseLines() {{
+  yield JSON.stringify({{choices: [{{delta: {{content: "## 議事録"}}}}]}});
+  yield "[DONE]";
+}}
+global.fetch = async () => ({{
+  ok: true,
+  headers: {{get: () => "text/event-stream; charset=utf-8"}},
+  text: async () => "",
+}});
+{stream_chat}
+(async () => {{
+  let result = "";
+  for await (const chunk of streamChat("文字起こし", new AbortController().signal)) result += chunk;
+  assert.equal(result, "## 議事録");
+  console.log("streamChat runtime test passed");
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+'''
+        subprocess.run(["node", "-e", harness], check=True)
+
     def test_inline_javascript_has_valid_syntax(self):
         parser = _ScriptExtractor()
         parser.feed(self.source)

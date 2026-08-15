@@ -108,6 +108,8 @@ python local_whisper_server.py
 
 `receivedAnswer is not defined` と表示された場合はモデルやLM Studioへの接続の問題ではなく、更新前のJavaScriptがブラウザに残っています。最新版では接続テストを議事録のストリーミング処理から分離しています。最新版の `index.html` を開き直し、Chrome / Edgeで `Ctrl+Shift+R`（macOSは `Command+Shift+R`）を押してキャッシュを無視して再読み込みしてください。
 
+設定タブ最下部のアプリ版が `2026.08.15.1` 以降であることも確認してください。版表示がない、または古い場合は、開いている `index.html` 自体が最新版ではありません。
+
 ### Ollama(ローカル・無料)
 
 - ベースURL: `http://localhost:11434/v1`
