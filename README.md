@@ -100,6 +100,16 @@ python local_whisper_server.py
 
 `Reachable at:` が `http://192.168.1.10:1234` のように表示される場合、そのまま入力できます。OpenAI互換APIに必要な末尾の `/v1` はアプリが自動補完します。手動で `http://192.168.1.10:1234/v1` と入力しても構いません。
 
+#### 議事録ではなく思考過程が表示される場合
+
+`Here's a thinking process...` のような分析文は議事録ではなく、Qwenなどのthinkingモデルが出力する内部推論です。アプリはLM Studioへthinkingを無効化する設定と `/no_think` を送信し、内部推論を議事録として採用しません。
+
+それでも最終回答が返らない場合は、LM Studioで **Instruct / Chat版** のモデルがロードされているか確認してください。Base版ではなく、日本語指示への追従性能があるモデルを推奨します。9BクラスのInstructモデルで通常は要約できますが、長い文字起こしではコンテキスト長と予測トークン数も十分に設定してください。
+
+`receivedAnswer is not defined` と表示された場合はモデルやLM Studioへの接続の問題ではなく、更新前のJavaScriptがブラウザに残っています。最新版では接続テストを議事録のストリーミング処理から分離しています。最新版の `index.html` を開き直し、Chrome / Edgeで `Ctrl+Shift+R`（macOSは `Command+Shift+R`）を押してキャッシュを無視して再読み込みしてください。
+
+設定タブ最下部のアプリ版が `2026.08.15.1` 以降であることも確認してください。版表示がない、または古い場合は、開いている `index.html` 自体が最新版ではありません。
+
 ### Ollama(ローカル・無料)
 
 - ベースURL: `http://localhost:11434/v1`
