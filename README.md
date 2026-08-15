@@ -106,7 +106,7 @@ python local_whisper_server.py
 
 それでも最終回答が返らない場合は、LM Studioで **Instruct / Chat版** のモデルがロードされているか確認してください。Base版ではなく、日本語指示への追従性能があるモデルを推奨します。9BクラスのInstructモデルで通常は要約できますが、長い文字起こしではコンテキスト長と予測トークン数も十分に設定してください。
 
-`receivedAnswer is not defined` と表示された場合はモデルの問題ではなく、更新前のJavaScriptがブラウザに残っています。最新版の `index.html` を開き直し、Chrome / Edgeで `Ctrl+Shift+R`（macOSは `Command+Shift+R`）を押してキャッシュを無視して再読み込みしてください。
+`receivedAnswer is not defined` と表示された場合はモデルやLM Studioへの接続の問題ではなく、更新前のJavaScriptがブラウザに残っています。最新版では接続テストを議事録のストリーミング処理から分離しています。最新版の `index.html` を開き直し、Chrome / Edgeで `Ctrl+Shift+R`（macOSは `Command+Shift+R`）を押してキャッシュを無視して再読み込みしてください。
 
 ### Ollama(ローカル・無料)
 

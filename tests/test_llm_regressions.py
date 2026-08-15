@@ -41,6 +41,12 @@ class LlmRegressionTests(unittest.TestCase):
         self.assertNotIn("reasoningFallback", self.source)
         self.assertNotIn("openAiReasoningText", self.source)
 
+    def test_connection_check_does_not_use_streaming_generator(self):
+        handler = self.source.split('$("testLlmBtn").addEventListener', 1)[1]
+        handler = handler.split("/* =========================================================", 1)[0]
+        self.assertIn("await testLlmConnection(abort.signal)", handler)
+        self.assertNotIn("streamChat(", handler)
+
     def test_inline_javascript_has_valid_syntax(self):
         parser = _ScriptExtractor()
         parser.feed(self.source)
