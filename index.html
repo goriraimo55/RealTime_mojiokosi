@@ -766,7 +766,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
 <script>
 "use strict";
 
-const APP_VERSION = "2026.08.15.1";
+const APP_VERSION = "2026.08.15.2";
 
 /* =========================================================
  *  Utilities
@@ -1684,6 +1684,7 @@ async function* streamChat(promptText, signal) {
   const requestBody = {
     model,
     stream: true,
+    max_tokens: 4096,
     temperature: 0.3,
     messages: [
       { role: "system", content: finalAnswerInstruction },
@@ -1696,22 +1697,38 @@ async function* streamChat(promptText, signal) {
     // forwards these chat-template arguments to models that support them.
     requestBody.chat_template_kwargs = { enable_thinking: false };
   }
-  const res = await fetch(llmApiUrl("/chat/completions"), {
-    method: "POST", headers: llmHeaders(), signal,
-    body: JSON.stringify(requestBody),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  if (!isEventStream(res)) {
-    const ev = await res.json();
-    const text = openAiResponseText(ev);
-    if (text) yield text;
-    return;
-  }
-  for await (const data of sseLines(res, signal)) {
-    if (data === "[DONE]") break;
-    let ev; try { ev = JSON.parse(data); } catch { continue; }
-    const text = openAiResponseText(ev);
-    if (text) yield text;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(llmApiUrl("/chat/completions"), {
+      method: "POST", headers: llmHeaders(), signal,
+      body: JSON.stringify(requestBody),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+
+    let answerPart = "";
+    let finishReason = "";
+    if (!isEventStream(res)) {
+      const ev = await res.json();
+      answerPart = openAiResponseText(ev);
+      finishReason = openAiFinishReason(ev);
+      if (answerPart) yield answerPart;
+    } else {
+      for await (const data of sseLines(res, signal)) {
+        if (data === "[DONE]") break;
+        let ev; try { ev = JSON.parse(data); } catch { continue; }
+        const text = openAiResponseText(ev);
+        finishReason = openAiFinishReason(ev) || finishReason;
+        if (text) { answerPart += text; yield text; }
+      }
+    }
+
+    if (finishReason !== "length") return;
+    if (!answerPart || attempt === 3) {
+      throw new Error("AIの最大出力トークン数に達しました。LM StudioのContext Lengthを増やして再実行してください。");
+    }
+    requestBody.messages.push(
+      { role: "assistant", content: answerPart },
+      { role: "user", content: "直前の回答が途中で切れました。重複や前置きなしで、切れた箇所から議事録の残りだけを続けてください。\n/no_think" },
+    );
   }
 }
 
@@ -1773,6 +1790,11 @@ function openAiResponseText(ev) {
   // e.g. {type:"response.output_text.delta", delta:"..."}.
   if (ev && /output_text\.delta$/.test(ev.type) && typeof ev.delta === "string") return ev.delta;
   return contentText(ev && (ev.output_text || ev.content || ev.text));
+}
+
+function openAiFinishReason(ev) {
+  const choice = ev && ev.choices && ev.choices[0];
+  return (choice && choice.finish_reason) || (ev && ev.stop_reason) || "";
 }
 
 function anthropicResponseText(ev) {

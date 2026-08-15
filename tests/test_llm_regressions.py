@@ -47,7 +47,7 @@ class LlmRegressionTests(unittest.TestCase):
         self.assertIn("await testLlmConnection(abort.signal)", handler)
         self.assertNotIn("streamChat(", handler)
 
-    def test_openai_stream_generator_yields_minutes_without_removed_state(self):
+    def test_openai_stream_generator_continues_after_token_limit(self):
         start = self.source.index("async function* streamChat")
         end = self.source.index("\nasync function testLlmConnection", start)
         stream_chat = self.source[start:end]
@@ -57,23 +57,57 @@ const settings = {{llm: {{provider: "lmstudio", baseUrl: "http://localhost:1234/
 function llmApiUrl(path) {{ return settings.llm.baseUrl + path; }}
 function llmHeaders() {{ return {{"Content-Type": "application/json"}}; }}
 function isEventStream(res) {{ return res.headers.get("content-type").includes("text/event-stream"); }}
-function openAiResponseText(ev) {{ return ev.choices?.[0]?.delta?.content || ""; }}
+function openAiResponseText(ev) {{ return ev.choices?.[0]?.delta?.content || ev.choices?.[0]?.message?.content || ""; }}
+function openAiFinishReason(ev) {{ return ev.choices?.[0]?.finish_reason || ""; }}
 function anthropicResponseText() {{ return ""; }}
-async function* sseLines() {{
-  yield JSON.stringify({{choices: [{{delta: {{content: "## 議事録"}}}}]}});
+let requestCount = 0;
+const requestBodies = [];
+async function* sseLines(res) {{
+  yield JSON.stringify({{choices: [{{delta: {{content: res.part}}}}]}});
+  yield JSON.stringify({{choices: [{{delta: {{}}, finish_reason: res.finishReason}}]}});
   yield "[DONE]";
 }}
-global.fetch = async () => ({{
-  ok: true,
-  headers: {{get: () => "text/event-stream; charset=utf-8"}},
-  text: async () => "",
-}});
+global.fetch = async (url, options) => {{
+  requestBodies.push(JSON.parse(options.body));
+  requestCount += 1;
+  return {{
+    ok: true,
+    part: requestCount === 1 ? "## 議事" : "録\\n- 完了",
+    finishReason: requestCount === 1 ? "length" : "stop",
+    headers: {{get: () => "text/event-stream; charset=utf-8"}},
+    text: async () => "",
+  }};
+}};
 {stream_chat}
 (async () => {{
   let result = "";
   for await (const chunk of streamChat("文字起こし", new AbortController().signal)) result += chunk;
-  assert.equal(result, "## 議事録");
-  console.log("streamChat runtime test passed");
+  assert.equal(result, "## 議事録\\n- 完了");
+  assert.equal(requestCount, 2);
+  assert.equal(requestBodies[0].max_tokens, 4096);
+  assert.equal(requestBodies[1].messages.at(-2).role, "assistant");
+  assert.match(requestBodies[1].messages.at(-1).content, /切れた箇所から/);
+
+  requestCount = 0;
+  requestBodies.length = 0;
+  global.fetch = async (url, options) => {{
+    requestBodies.push(JSON.parse(options.body));
+    requestCount += 1;
+    return {{
+      ok: true,
+      headers: {{get: () => "application/json"}},
+      json: async () => ({{choices: [{{
+        message: {{content: requestCount === 1 ? "概要" : "と結論"}},
+        finish_reason: requestCount === 1 ? "length" : "stop",
+      }}]}}),
+      text: async () => "",
+    }};
+  }};
+  result = "";
+  for await (const chunk of streamChat("文字起こし", new AbortController().signal)) result += chunk;
+  assert.equal(result, "概要と結論");
+  assert.equal(requestCount, 2);
+  console.log("streamChat continuation test passed");
 }})().catch(error => {{ console.error(error); process.exitCode = 1; }});
 '''
         subprocess.run(["node", "-e", harness], check=True)
